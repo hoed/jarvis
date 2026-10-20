@@ -76,7 +76,7 @@ const WAKE_DEBOUNCE = 1500
  * rare false wake than a name that does not answer.
  */
 const WAKE =
-  /\b(?:hey|hi|ok|okay|yo)?\s*(?:anna|ana|annah|hanna|hannah)\b(?!'s)/i
+  /\b(?:hey|hi|ok|okay|yo)?\s*(?:anna|ana|annah|hanna|hannah|jarvis)\b(?!'s)/i
 
 /** Everything after the wake phrase, which is usually the actual command. */
 function afterWake(text: string): string {
@@ -265,7 +265,7 @@ const norm = (s: string) =>
  * would be the single most infuriating failure this file could have.
  */
 const OVERRIDE =
-  /\b(stop|wait|anna|ana|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
+  /\b(stop|wait|anna|ana|jarvis|cancel|enough|quiet|hold on|shut up|never ?mind|forget it|no)\b/i
 
 /**
  * Words too common to be evidence of anything.
