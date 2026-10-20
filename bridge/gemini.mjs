@@ -284,20 +284,46 @@ export function geminiQuery({ prompt, options }) {
       let stepText = ''
       let finish = null
 
-      try {
-        const stream = await ai.models.generateContentStream({
-          model,
-          contents,
-          config: {
-            systemInstruction: options.systemPrompt,
-            abortSignal: signal,
-            ...(declarations.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
-            ...(thinkingFor(model, options.effort)
-              ? { thinkingConfig: thinkingFor(model, options.effort) }
-              : {}),
-          },
-        })
+      let stream = null
+      let activeModel = model
+      let attempts = 0
+      while (attempts < 3) {
+        try {
+          stream = await ai.models.generateContentStream({
+            model: activeModel,
+            contents,
+            config: {
+              systemInstruction: options.systemPrompt,
+              abortSignal: signal,
+              ...(declarations.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
+              ...(thinkingFor(activeModel, options.effort)
+                ? { thinkingConfig: thinkingFor(activeModel, options.effort) }
+                : {}),
+            },
+          })
+          break
+        } catch (err) {
+          attempts++
+          const errMsg = String(err?.message ?? err)
+          if (signal.aborted) {
+            rollback()
+            yield { type: 'result', subtype: 'success', result: stepText, total_cost_usd: null }
+            return
+          }
+          if ((errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429')) && attempts < 3) {
+            console.warn(`[jarvis] gemini model ${activeModel} busy, falling back to gemini-3.5-flash-lite (attempt ${attempts})...`)
+            activeModel = 'gemini-3.5-flash-lite'
+            await new Promise((r) => setTimeout(r, 500 * attempts))
+            continue
+          }
+          console.error('[jarvis] gemini request failed:', errMsg)
+          rollback()
+          yield { type: 'result', subtype: 'error_during_execution', errors: [errMsg] }
+          return
+        }
+      }
 
+      try {
         for await (const chunk of stream) {
           if (signal.aborted) break
           const cand = chunk.candidates?.[0]

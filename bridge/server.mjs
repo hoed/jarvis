@@ -129,7 +129,7 @@ if (ENGINE === 'gemini' && !GEMINI_KEY) {
  */
 const MODEL =
   ENGINE === 'gemini'
-    ? (process.env.JARVIS_GEMINI_MODEL ?? 'gemini-3.7-flash')
+    ? (process.env.JARVIS_GEMINI_MODEL ?? 'gemini-3.5-flash')
     : (process.env.JARVIS_MODEL ?? 'claude-opus-5')
 
 /** One entry point per engine, same call shape. */
