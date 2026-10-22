@@ -75,6 +75,34 @@ export const BRIDGE_WS_URL = str(import.meta.env.VITE_BRIDGE_URL) ?? 'ws://local
 export const BRIDGE_HTTP_URL = BRIDGE_WS_URL.replace(/^ws/, 'http')
 
 /**
+ * Shared secret for a bridge hosted somewhere public (JARVIS_AUTH_TOKEN on the
+ * server). It is NOT a VITE_ variable: those are inlined into the bundle and
+ * would hand the secret to every visitor. Open the site once as
+ * `https://your-site/#token=<secret>`; it is kept in localStorage and removed
+ * from the address bar. Empty for a local bridge, which needs none.
+ */
+const TOKEN_KEY = 'jarvis_token'
+function loadBridgeToken(): string {
+  try {
+    const m = /(?:^#|&)token=([^&]+)/.exec(window.location.hash)
+    if (m) {
+      localStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1]))
+      history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
+    return localStorage.getItem(TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+export const BRIDGE_TOKEN = loadBridgeToken()
+
+/** Append the bridge token (if any) to a bridge URL, ws(s) or http(s). */
+export const withBridgeToken = (url: string): string =>
+  BRIDGE_TOKEN
+    ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(BRIDGE_TOKEN)}`
+    : url
+
+/**
  * Speech output engine.
  *
  * false (default) — the browser's own speechSynthesis. Runs on-device, so

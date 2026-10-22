@@ -22,6 +22,7 @@ import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
+import { timingSafeEqual } from 'node:crypto'
 import { readFileSync, realpathSync } from 'node:fs'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
@@ -63,6 +64,29 @@ const EXTRA_ORIGINS = new Set(
     .filter(Boolean),
 )
 const ALLOW_NO_ORIGIN = process.env.JARVIS_ALLOW_NO_ORIGIN === '1'
+
+/**
+ * Shared secret for a bridge that is reachable from the internet. Origin
+ * checks only stop other *websites*; anyone can still dial the socket directly.
+ * Unset (the default) means no token is required, which is right for localhost.
+ * When set, every HTTP route and the WebSocket need `?token=<secret>`.
+ */
+const AUTH_TOKEN = process.env.JARVIS_AUTH_TOKEN ?? ''
+
+const pathOf = (u) => (u ?? '/').split('?')[0]
+
+function tokenOk(reqUrl) {
+  if (!AUTH_TOKEN) return true
+  let given = ''
+  try {
+    given = new URL(reqUrl ?? '/', 'http://bridge').searchParams.get('token') ?? ''
+  } catch {
+    return false
+  }
+  const a = Buffer.from(given)
+  const b = Buffer.from(AUTH_TOKEN)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
 
@@ -709,7 +733,13 @@ const handleRequest = async (req, res) => {
     return res.end()
   }
 
-  if (req.method === 'GET' && req.url === '/health') {
+  if (!tokenOk(req.url)) {
+    console.warn('[jarvis] refused http request: missing or wrong token')
+    res.writeHead(401, cors)
+    return res.end('unauthorized')
+  }
+
+  if (req.method === 'GET' && pathOf(req.url) === '/health') {
     // The browser reads this once at boot to decide which voice engine to use.
     // Both premium paths ride the same ElevenLabs key, so both flags track it:
     // with a key the app transcribes with Scribe and speaks with ElevenLabs;
@@ -814,7 +844,12 @@ const handleRequest = async (req, res) => {
     const target = asked.searchParams.get('url') ?? ''
     const mode = asked.searchParams.get('mode') === 'live' ? 'live' : 'reader'
     try {
-      const page = await renderPage(target, mode, `http://localhost:${PORT}`)
+      const page = await renderPage(
+        target,
+        mode,
+        (process.env.JARVIS_PUBLIC_URL ?? `http://localhost:${PORT}`).replace(/\/+$/, ''),
+        AUTH_TOKEN,
+      )
       res.writeHead(200, { ...cors, ...page.headers })
       return res.end(page.body)
     } catch (err) {
@@ -839,7 +874,7 @@ const handleRequest = async (req, res) => {
     }
   }
 
-  if (req.method === 'POST' && req.url === '/tts') {
+  if (req.method === 'POST' && pathOf(req.url) === '/tts') {
     let body = ''
     let overflowed = false
     for await (const chunk of req) {
@@ -934,7 +969,7 @@ const handleRequest = async (req, res) => {
   // use, and a server-side transcriber cannot. Detecting that the user is
   // speaking at all is done locally with voice-activity detection, which never
   // touches this endpoint; this is only for the words.
-  if (req.method === 'POST' && req.url === '/stt') {
+  if (req.method === 'POST' && pathOf(req.url) === '/stt') {
     const key = elevenKey()
     if (!key) {
       res.writeHead(503, cors)
@@ -1037,6 +1072,10 @@ const wss = new WebSocketServer({
           ' — set JARVIS_ALLOWED_ORIGINS to permit it',
       )
       return done(false, 403, 'Forbidden')
+    }
+    if (!tokenOk(req.url)) {
+      console.warn('[jarvis] rejected websocket: missing or wrong token')
+      return done(false, 401, 'Unauthorized')
     }
     done(true)
   },

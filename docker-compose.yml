@@ -1,0 +1,37 @@
+# Bridge + Caddy (automatic HTTPS, needed because the Vercel page is https
+# and can only open wss:// to a non-localhost host).
+#
+#   1. Point a DNS A record (e.g. bridge.example.com) at this server.
+#   2. Create .env next to this file (see .env.example) with at least:
+#        GEMINI_API_KEY=...
+#        JARVIS_AUTH_TOKEN=<long random string>
+#        JARVIS_ALLOWED_ORIGINS=https://virtualanna.vercel.app
+#        BRIDGE_DOMAIN=bridge.example.com
+#        JARVIS_PUBLIC_URL=https://bridge.example.com
+#   3. docker compose up -d --build
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      JARVIS_ENGINE: gemini
+    expose:
+      - '8787'
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      BRIDGE_DOMAIN: ${BRIDGE_DOMAIN}
+    command: caddy reverse-proxy --from ${BRIDGE_DOMAIN} --to bridge:8787
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - bridge
+
+volumes:
+  caddy_data:

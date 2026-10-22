@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useStore, type OrbitObject } from '../store'
-import { BRIDGE_HTTP_URL } from '../config'
+import { BRIDGE_HTTP_URL, withBridgeToken } from '../config'
 
 /**
  * Images revolving around the reactor.
@@ -43,7 +43,7 @@ const DISK_PATH =
 function resolveSrc(src: string): string {
   const path = src.replace(/^file:\/\//, '')
   if (!DISK_PATH.test(path)) return src
-  return `${BRIDGE_HTTP_URL}/file?path=${encodeURIComponent(path)}`
+  return withBridgeToken(`${BRIDGE_HTTP_URL}/file?path=${encodeURIComponent(path)}`)
 }
 
 type Entry = {

@@ -5,6 +5,7 @@ import {
   TTS_ENGINE,
   KOKORO_VOICE,
   BRIDGE_HTTP_URL,
+  withBridgeToken,
   GEMINI_TTS_VOICE,
   USE_GEMINI_TTS,
 } from '../config'
@@ -749,7 +750,7 @@ export function createSpeaker(): Speaker {
 async function fetchCloudAudio(text: string): Promise<string | null> {
   if (BACKEND === 'bridge') {
     try {
-      const res = await fetch(`${BRIDGE_HTTP_URL}/tts`, {
+      const res = await fetch(withBridgeToken(`${BRIDGE_HTTP_URL}/tts`), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ text }),

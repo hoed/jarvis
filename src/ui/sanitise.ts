@@ -1,5 +1,5 @@
 import DOMPurify from 'dompurify'
-import { BRIDGE_HTTP_URL } from '../config'
+import { BRIDGE_HTTP_URL, withBridgeToken } from '../config'
 
 /**
  * The safety boundary for model-authored markup.
@@ -47,14 +47,20 @@ function rewriteSrc(el: Element, attr: 'src' | 'poster', route: 'img' | 'media')
 
   const path = raw.replace(/^file:\/\//, '')
   if (DISK_PATH.test(path)) {
-    el.setAttribute(attr, `${BRIDGE_HTTP_URL}/file?path=${encodeURIComponent(path)}`)
+    el.setAttribute(
+      attr,
+      withBridgeToken(`${BRIDGE_HTTP_URL}/file?path=${encodeURIComponent(path)}`),
+    )
     return
   }
 
   if (!/^https?:\/\//i.test(raw)) return
   // Already ours. Proxying the proxy would ask the bridge to fetch itself.
   if (raw.startsWith(`${BRIDGE_HTTP_URL}/`)) return
-  el.setAttribute(attr, `${BRIDGE_HTTP_URL}/${route}?url=${encodeURIComponent(raw)}`)
+  el.setAttribute(
+    attr,
+    withBridgeToken(`${BRIDGE_HTTP_URL}/${route}?url=${encodeURIComponent(raw)}`),
+  )
 }
 
 function rewriteMedia(root: Element) {
