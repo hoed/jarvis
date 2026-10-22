@@ -27,6 +27,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
+import { weatherServer, searchServer } from './tools.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
 
@@ -295,6 +296,7 @@ function decideTool(name) {
     // here rather than left to the verb rules below, which read `ui_theme` as
     // a write and would hold the whole surface back behind ALLOW_WRITES.
     if (server === 'jarvis' || server === 'jarvis_ui') return true
+    if (server === 'jarvis_weather' || server === 'jarvis_search') return true
 
     // The browser server gates itself, at construction: chromeServer() only
     // builds the acting tools — click, type, form input, close tab — when
@@ -715,7 +717,7 @@ const handleRequest = async (req, res) => {
     // student with nothing configured still has a working assistant.
     const eleven = Boolean(elevenKey())
     res.writeHead(200, { ...cors, 'content-type': 'application/json' })
-    return res.end(JSON.stringify({ ok: true, tts: eleven, stt: eleven }))
+    return res.end(JSON.stringify({ ok: true, tts: true, stt: eleven }))
   }
 
   // Serve local image files to the page. Screenshots and generated art land on
@@ -838,13 +840,6 @@ const handleRequest = async (req, res) => {
   }
 
   if (req.method === 'POST' && req.url === '/tts') {
-    const key = elevenKey()
-    if (!key) {
-      res.writeHead(503, cors)
-      return res.end('no elevenlabs key')
-    }
-    // A spoken line is a few hundred bytes. Anything approaching this is not a
-    // sentence, and buffering it unbounded would let one request eat the heap.
     let body = ''
     let overflowed = false
     for await (const chunk of req) {
@@ -859,8 +854,6 @@ const handleRequest = async (req, res) => {
       res.writeHead(400, cors)
       return res.end('body too large')
     }
-    // Inside a try: this handler is async with nothing catching its rejection,
-    // so a malformed body used to take the entire bridge down with it.
     let text
     try {
       ;({ text } = JSON.parse(body || '{}'))
@@ -872,47 +865,66 @@ const handleRequest = async (req, res) => {
       res.writeHead(400, cors)
       return res.end('no text')
     }
-    try {
-      const upstream = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
-          // 22kHz mono is half the bytes of 44kHz and indistinguishable through
-          // a laptop speaker; optimize_streaming_latency=3 trades a little
-          // prosody for a much earlier first byte.
-          `?output_format=mp3_22050_32&optimize_streaming_latency=3`,
-        {
-          method: 'POST',
-          headers: { 'xi-api-key': key, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            text,
-            // Flash is the low-latency model — a conversation needs speed more
-            // than it needs the last few percent of quality.
-            model_id: 'eleven_flash_v2_5',
-            voice_settings: {
-              stability: 0.4,
-              similarity_boost: 0.75,
-              speed: 1.05,
-            },
-          }),
-        },
-      )
-      if (!upstream.ok) {
-        res.writeHead(upstream.status, cors)
-        return res.end(await upstream.text())
-      }
 
-      // Pipe it through rather than buffering. Waiting for the whole file here
-      // would throw away everything the streaming endpoint just bought us.
-      res.writeHead(200, {
-        ...cors,
-        'content-type': 'audio/mpeg',
-        'cache-control': 'no-cache',
-      })
-      for await (const chunk of upstream.body) res.write(Buffer.from(chunk))
-      return res.end()
-    } catch (err) {
-      res.writeHead(502, cors)
-      return res.end(String(err?.message ?? err))
+    const key = elevenKey()
+    let upstream = null
+
+    if (key) {
+      try {
+        upstream = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream` +
+            `?output_format=mp3_22050_32&optimize_streaming_latency=3`,
+          {
+            method: 'POST',
+            headers: { 'xi-api-key': key, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              text,
+              model_id: 'eleven_flash_v2_5',
+              voice_settings: {
+                stability: 0.4,
+                similarity_boost: 0.75,
+                speed: 1.05,
+              },
+            }),
+            signal: AbortSignal.timeout(8000),
+          },
+        )
+        if (!upstream.ok) upstream = null
+      } catch {
+        upstream = null
+      }
     }
+
+    // Completely free neural-style TTS fallback (unlimited, zero keys, zero quotas)
+    if (!upstream) {
+      try {
+        const isId = /\b(halo|apa|kabar|saya|kamu|bisa|dan|ini|itu|ada|sudah|ya|tidak|terima|kasih|tuan)\b/i.test(text)
+        const lang = isId ? 'id' : 'en-GB'
+        const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.slice(0, 500))}&tl=${lang}&client=tw-ob`
+        upstream = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+          signal: AbortSignal.timeout(8000),
+        })
+        if (!upstream.ok) upstream = null
+      } catch (err) {
+        console.error('[jarvis] free TTS error:', err.message)
+      }
+    }
+
+    if (!upstream || !upstream.ok) {
+      res.writeHead(502, cors)
+      return res.end('TTS unavailable')
+    }
+
+    res.writeHead(200, {
+      ...cors,
+      'content-type': 'audio/mpeg',
+      'cache-control': 'no-cache',
+    })
+    for await (const chunk of upstream.body) res.write(Buffer.from(chunk))
+    return res.end()
   }
 
   // Speech to text. The browser captures one spoken segment as a compressed
@@ -1245,6 +1257,9 @@ wss.on('connection', (socket) => {
         jarvis_chrome: chromeServer({ allowWrites: ALLOW_WRITES }),
         // The camera, which unlike everything else here has to ask and wait.
         jarvis_eyes: visionServer(ask),
+        // Built-in capability servers: weather and web search, no API key needed.
+        jarvis_weather: weatherServer(),
+        jarvis_search: searchServer(),
       },
       // A plain system prompt, not the claude_code preset. The preset is
       // tuned for a coding agent — verbose, file-oriented, and a large chunk
@@ -1292,7 +1307,7 @@ wss.on('connection', (socket) => {
       // through a `Bash: echo hello` without asking, and only reaches us for
       // something with a consequence, like a `touch`. So a deny here is
       // reliable; an absence of a call here is not proof nothing ran.
-      canUseTool: async (toolName) => {
+      canUseTool: async (toolName, _args, _opts) => {
         const ok = decideTool(toolName)
         console.log(`[jarvis] tool ${toolName} -> ${ok ? 'allow' : 'deny'}`)
         return ok

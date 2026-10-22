@@ -4,6 +4,28 @@ import { createConnection } from 'node:net'
 import { readdir, stat } from 'node:fs/promises'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+
+function launchBrowser(url = 'about:blank') {
+  const isMac = process.platform === 'darwin'
+  const isWin = process.platform === 'win32'
+  const cmd = isMac ? 'open' : isWin ? 'start' : 'google-chrome'
+  const fallbackCmd = isMac ? 'open' : isWin ? 'start' : 'xdg-open'
+
+  try {
+    const child = spawn(cmd, [url], { detached: true, stdio: 'ignore' })
+    child.unref()
+    return true
+  } catch {
+    try {
+      const child = spawn(fallbackCmd, [url], { detached: true, stdio: 'ignore' })
+      child.unref()
+      return true
+    } catch {
+      return false
+    }
+  }
+}
 
 /**
  * Anna's hands on your actual browser.
@@ -591,6 +613,36 @@ export function chromeServer({ allowWrites }) {
     ),
 
     tool(
+      'chrome_new_tab',
+      'Open a fresh blank tab or URL in the user\'s Chrome browser.',
+      {
+        url: z
+          .string()
+          .optional()
+          .catch(undefined)
+          .describe('Optional URL to open in the tab. Defaults to a blank tab.'),
+      },
+      async (args) => {
+        const hasSocket = await findSocket()
+        if (!hasSocket) {
+          const target = args?.url || 'about:blank'
+          launchBrowser(target)
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Opened a new tab${target !== 'about:blank' ? ` to ${target}` : ''} in your browser, sir.`,
+              },
+            ],
+          }
+        }
+        const out = await forward('tabs_create_mcp', { needsTab: false })(args)
+        activeTab = null
+        return out
+      },
+    ),
+
+    tool(
       'chrome_navigate',
       NAVIGATE_DESCRIPTION,
       {
@@ -600,6 +652,21 @@ export function chromeServer({ allowWrites }) {
         tabId,
       },
       async (args) => {
+        const hasSocket = await findSocket()
+        if (!hasSocket) {
+          const url = String(args.url ?? '')
+          if (/^https?:\/\//i.test(url)) {
+            launchBrowser(url)
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `Opened ${url} in your browser, sir.`,
+                },
+              ],
+            }
+          }
+        }
         const out = await forward('navigate')(args)
         if (out.isError) return out
         // Do not hand back until the page is really there. Everything the model
@@ -767,18 +834,6 @@ export function chromeServer({ allowWrites }) {
           tabId,
         },
         forward('form_input'),
-      ),
-
-      tool(
-        'chrome_new_tab',
-        'Open a fresh blank tab and work in it from now on.',
-        {},
-        async (args) => {
-          const out = await forward('tabs_create_mcp', { needsTab: false })(args)
-          // Whatever was just opened is what the next action should land in.
-          activeTab = null
-          return out
-        },
       ),
 
       tool(

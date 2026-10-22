@@ -5,6 +5,8 @@ import {
   TTS_ENGINE,
   KOKORO_VOICE,
   BRIDGE_HTTP_URL,
+  GEMINI_TTS_VOICE,
+  USE_GEMINI_TTS,
 } from '../config'
 import * as kokoro from './kokoro'
 import { caps } from './capabilities'
@@ -62,7 +64,7 @@ const ECHO_TAIL_MS = 1800
  * indistinguishable. This tells them apart at a glance.
  */
 export const diag = {
-  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs',
+  engine: 'system' as 'system' | 'kokoro' | 'elevenlabs' | 'gemini',
   /** Utterances handed to an engine — the OS voice or an audio element. */
   spoken: 0,
   /**
@@ -177,28 +179,22 @@ function score(v: SpeechSynthesisVoice): number {
   const n = v.name.toLowerCase()
   let s = 0
 
-  // The macOS British male, and the closest thing to the character available
-  // without leaving the machine.
-  if (n.startsWith('daniel')) s += 100
-  else if (n.includes('google uk english male')) s += 85
-  else if (/\b(oliver|arthur|jamie|malcolm)\b/.test(n)) s += 80
-  // Newer macOS en-GB male voices — casual, but serviceable.
-  else if (/\b(reed|rocko|eddy)\b/.test(n)) s += 40
+  // High score for clear female British/English voices suited for Anna
+  if (n.includes('google uk english female')) s += 120
+  else if (/\b(serena|stephanie|fiona|samantha|victoria|karen|moira|kate|zoe|ava|susan)\b/.test(n)) s += 100
+  else if (n.includes('female') || n.includes('natural')) s += 80
+  else if (n.includes('google us english female') || n.includes('zira')) s += 70
 
   // Higher-quality variants of whatever matched above.
   if (n.includes('premium')) s += 30
   else if (n.includes('enhanced')) s += 20
 
   if (/en[-_]gb/i.test(v.lang)) s += 25
-  else if (/^en/i.test(v.lang)) s += 5
+  else if (/^en/i.test(v.lang)) s += 10
 
-  // Voices that clearly aren't a butler.
+  // Voices that clearly aren't suitable
   if (/grandma|grandpa|bubbles|jester|bells|boing|whisper|zarvox|superstar|trinoids|wobble|bahh|organ|cellos|bad news|good news/.test(n)) {
     s -= 200
-  }
-  // Female-presenting names across the English sets.
-  if (/\b(flo|sandy|shelley|kate|serena|fiona|moira|karen|tessa|samantha|zoe|allison|ava|susan)\b/.test(n)) {
-    s -= 60
   }
 
   return s
@@ -244,7 +240,8 @@ function pickVoice(): SpeechSynthesisVoice | null {
  *  always naming a speechSynthesis voice that a cloud or neural engine has
  *  quietly replaced. */
 export function currentVoiceName(): string {
-  if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'
+  if (USE_GEMINI_TTS) return `Gemini TTS (${GEMINI_TTS_VOICE})`
+  if (USE_ELEVENLABS || caps().tts) return 'ElevenLabs'  
   if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
     return KOKORO_VOICE.replace(/^bm_/, '')
   }
@@ -371,21 +368,26 @@ export function createSpeaker(): Speaker {
     void pump()
   }
 
-  /** null means "no audio pipeline, use the system voice directly". */
-  function synthesise(text: string): Promise<string | null> | null {
-    // Prefer the ElevenLabs voice whenever the bridge reports it is available —
-    // for a demo the timbre is worth the round trip, and this is what makes the
-    // premium path automatic with no flag to set. It falls back to the browser
-    // voice on any failure, so a student without a key still hears him speak.
-    // `nativeBroken` latches on once the system voice has proved unusable.
+  async function synthesise(text: string): Promise<string | null> {
+    // Priority order:
+    //   1. Gemini TTS  — direct browser→Google, no bridge needed (VITE_USE_GEMINI_TTS=true)
+    //   2. ElevenLabs  — via bridge proxy or direct key  (VITE_USE_ELEVENLABS=true)
+    //   3. Kokoro      — local neural TTS in WASM        (VITE_TTS_ENGINE=kokoro)
+    //   4. System      — browser speechSynthesis fallback
+    if (USE_GEMINI_TTS) {
+      const audio = await fetchGeminiAudio(text).catch(() => null)
+      if (audio) {
+        diag.engine = 'gemini'
+        return audio
+      }
+      console.warn('[jarvis] Gemini TTS unavailable/quota reached — falling back to ElevenLabs/system')
+    }
     if (USE_ELEVENLABS || caps().tts || nativeBroken) {
-      // Recorded at the moment the tier is chosen rather than only when the
-      // native voice latches over. Without this the panel reported 'system'
-      // for a session that had spoken every one of its sentences through
-      // ElevenLabs, which makes the one field naming the engine useless
-      // exactly when you are trying to work out which engine is at fault.
-      diag.engine = 'elevenlabs'
-      return fetchCloudAudio(text).catch(() => null)
+      const audio = await fetchCloudAudio(text).catch(() => null)
+      if (audio) {
+        diag.engine = 'elevenlabs'
+        return audio
+      }
     }
     if (TTS_ENGINE === 'kokoro' && !kokoro.isUnavailable()) {
       diag.engine = 'kokoro'
@@ -446,10 +448,18 @@ export function createSpeaker(): Speaker {
       if (!nativeBroken) {
         nativeBroken = true
         diag.nativeBroken = true
-        diag.engine = 'elevenlabs'
-        console.warn('[jarvis] system voice is not producing sound — using the bridge speech proxy from here on')
+        console.warn('[jarvis] system voice is not producing sound — switching to cloud TTS')
       }
-      const rescue = await fetchCloudAudio(item.text).catch(() => null)
+      // Rescue: try Gemini TTS first, then ElevenLabs, so a quota error on one never causes silence
+      let rescue: string | null = null
+      if (import.meta.env.VITE_GEMINI_API_KEY) {
+        rescue = await fetchGeminiAudio(item.text).catch(() => null)
+        if (rescue) diag.engine = 'gemini'
+      }
+      if (!rescue) {
+        rescue = await fetchCloudAudio(item.text).catch(() => null)
+        if (rescue) diag.engine = 'elevenlabs'
+      }
       if (rescue && !cancelled) {
         diag.rescued++
         await playUrl(rescue, item.text)
@@ -482,10 +492,8 @@ export function createSpeaker(): Speaker {
       // change with stakes, and that steadiness is most of the effect. This
       // lands around 130 wpm, below the median for film dialogue.
       u.rate = 0.92
-      // Mid-baritone, and *not* pushed lower for gravitas. The voice is
-      // clarity-weighted rather than chest-weighted; dropping it further reads
-      // as a film-trailer voiceover, which is the wrong character entirely.
-      u.pitch = 0.95
+      // Warm, natural pitch for Anna
+      u.pitch = 1.05
 
       // speechSynthesis exposes no amplitude, so drive the reactor from a
       // synthetic envelope. It only has to look like speech, not match it.
@@ -591,7 +599,7 @@ export function createSpeaker(): Speaker {
       // see the onplaying handler below.
       diag.spoken++
       diag.lastText = text.slice(0, 60)
-      diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : 'ElevenLabs'
+      diag.voice = diag.engine === 'kokoro' ? KOKORO_VOICE : diag.engine === 'gemini' ? GEMINI_TTS_VOICE : 'ElevenLabs'
 
       let read: (() => number) | null = null
       const ctx = outputContext()
@@ -781,4 +789,88 @@ async function fetchCloudAudio(text: string): Promise<string | null> {
   }
 
   return null
+}
+
+/**
+ * Gemini TTS — speaks text directly from the browser using the Gemini
+ * generateContent API with response_modalities: ["AUDIO"].
+ *
+ * No bridge needed, no ElevenLabs account. Uses VITE_GEMINI_API_KEY which the
+ * direct-mode brain already reads. Audio comes back as base64 PCM; we wrap it
+ * in a WAV header so the browser Audio element plays it without a decoder lib.
+ *
+ * Good voices for Anna: Aoede (warm female), Leda, Zephyr, Schedar, Gacrux.
+ * Set VITE_GEMINI_TTS_VOICE in .env.local to override.
+ */
+async function fetchGeminiAudio(text: string): Promise<string | null> {
+  const key = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? ''
+  if (!key) return null
+
+  const model = 'gemini-2.5-flash-preview-tts'
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: {
+          response_modalities: ['AUDIO'],
+          speech_config: {
+            voice_config: {
+              prebuilt_voice_config: { voice_name: GEMINI_TTS_VOICE },
+            },
+          },
+        },
+      }),
+    })
+  } catch {
+    return null
+  }
+
+  if (!res.ok) {
+    console.error('[anna] Gemini TTS HTTP error', res.status, await res.text().catch(() => ''))
+    return null
+  }
+
+  const json = await res.json()
+  if (json?.error) {
+    console.error('[anna] Gemini TTS API error:', JSON.stringify(json.error))
+    return null
+  }
+  const part = json?.candidates?.[0]?.content?.parts?.[0]
+  const b64: string | undefined = part?.inlineData?.data
+  if (!b64) {
+    console.error('[anna] Gemini TTS: no audio in response', JSON.stringify(json).slice(0, 200))
+    return null
+  }
+
+  // Parse sample rate from mimeType e.g. "audio/L16;codec=pcm;rate=24000"
+  const mime: string = part?.inlineData?.mimeType ?? ''
+  const rateMatch = mime.match(/rate=(\d+)/)
+  const pcm     = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+  const SR      = rateMatch ? parseInt(rateMatch[1], 10) : 24000, CH = 1, BPS = 16
+  const header  = new ArrayBuffer(44)
+  const dv      = new DataView(header)
+  const te      = new TextEncoder()
+  const wc      = (off: number, s: string) =>
+    te.encode(s).forEach((b, i) => dv.setUint8(off + i, b))
+  wc(0, 'RIFF');  dv.setUint32(4, 36 + pcm.byteLength, true)
+  wc(8, 'WAVE'); wc(12, 'fmt ')
+  dv.setUint32(16, 16, true)              // subchunk1 size
+  dv.setUint16(20, 1, true)               // PCM
+  dv.setUint16(22, CH, true)
+  dv.setUint32(24, SR, true)
+  dv.setUint32(28, (SR * CH * BPS) / 8, true)
+  dv.setUint16(32, (CH * BPS) / 8, true)
+  dv.setUint16(34, BPS, true)
+  wc(36, 'data'); dv.setUint32(40, pcm.byteLength, true)
+
+  const wav = new Uint8Array(44 + pcm.byteLength)
+  wav.set(new Uint8Array(header), 0)
+  wav.set(pcm, 44)
+  return URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }))
 }

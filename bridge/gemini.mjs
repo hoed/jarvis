@@ -287,15 +287,20 @@ export function geminiQuery({ prompt, options }) {
       let stream = null
       let activeModel = model
       let attempts = 0
+      let enableGoogleSearch = process.env.JARVIS_GEMINI_GOOGLE_SEARCH === '1'
       while (attempts < 3) {
         try {
+          const tools = [
+            ...(declarations.length ? [{ functionDeclarations: declarations }] : []),
+            ...(enableGoogleSearch ? [{ googleSearch: {} }] : []),
+          ]
           stream = await ai.models.generateContentStream({
             model: activeModel,
             contents,
             config: {
               systemInstruction: options.systemPrompt,
               abortSignal: signal,
-              ...(declarations.length ? { tools: [{ functionDeclarations: declarations }] } : {}),
+              ...(tools.length ? { tools } : {}),
               ...(thinkingFor(activeModel, options.effort)
                 ? { thinkingConfig: thinkingFor(activeModel, options.effort) }
                 : {}),
@@ -310,9 +315,20 @@ export function geminiQuery({ prompt, options }) {
             yield { type: 'result', subtype: 'success', result: stepText, total_cost_usd: null }
             return
           }
+          if (enableGoogleSearch && (errMsg.includes('429') || errMsg.includes('RESOURCE_EXHAUSTED'))) {
+            console.warn(`[jarvis] googleSearch grounding quota exceeded, retrying without googleSearch...`)
+            enableGoogleSearch = false
+            continue
+          }
           if ((errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('429')) && attempts < 3) {
-            console.warn(`[jarvis] gemini model ${activeModel} busy, falling back to gemini-3.5-flash-lite (attempt ${attempts})...`)
-            activeModel = 'gemini-3.5-flash-lite'
+            const fallbacks = [
+              activeModel === 'gemini-3.5-flash-lite' ? 'gemini-3.8-flash' : 'gemini-3.5-flash-lite',
+              'gemini-3.8-flash',
+              'gemini-3.5-flash',
+            ]
+            const nextModel = fallbacks[attempts - 1] || 'gemini-3.5-flash-lite'
+            console.warn(`[jarvis] gemini model ${activeModel} busy, falling back to ${nextModel} (attempt ${attempts})...`)
+            activeModel = nextModel
             await new Promise((r) => setTimeout(r, 500 * attempts))
             continue
           }
@@ -330,6 +346,7 @@ export function geminiQuery({ prompt, options }) {
           finish = cand?.finishReason ?? finish
           for (const p of cand?.content?.parts ?? []) {
             if (p.thought) continue
+            if (p.executableCode || p.codeExecutionResult || p.videoMetadata) continue
             if (p.functionCall) {
               const rawId = p.functionCall.id
               const call = {

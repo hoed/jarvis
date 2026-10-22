@@ -155,6 +155,28 @@ export const FAST_MODE = true
  *                 keyword, far fewer false triggers. Needs a free AccessKey
  *                 from console.picovoice.ai.
  */
+/**
+ * Gemini TTS — speaks directly from the browser via the Gemini API.
+ * No bridge needed, no ElevenLabs account.
+ *
+ * Enable by setting VITE_USE_GEMINI_TTS=true and VITE_GEMINI_API_KEY in
+ * .env.local. The key is the same one used by the Gemini engine in the bridge,
+ * but here it goes in the browser bundle — only use it on a local machine.
+ *
+ * Voice choices: Aoede, Charon, Fenrir, Kore, Puck, Leda, Orus, Zephyr,
+ * Schedar, Sulafat, Algieba, Despina, Erinome, Gacrux, Rasalgethi ...
+ * 'Aoede' is warm and clear. 'Fenrir' is lower and more measured.
+ */
+export const USE_GEMINI_TTS = flag(
+  'VITE_USE_GEMINI_TTS',
+  import.meta.env.VITE_USE_GEMINI_TTS,
+  false,
+)
+
+export const GEMINI_TTS_VOICE = (
+  (import.meta.env.VITE_GEMINI_TTS_VOICE as string | undefined) ?? 'Leda'
+).trim() || 'Leda'
+
 export const WAKE_ENGINE: 'speech' | 'porcupine' = env.porcupineKey
   ? 'porcupine'
   : 'speech'
