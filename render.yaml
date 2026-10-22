@@ -1,0 +1,33 @@
+# Render Blueprint: runs the bridge from the Dockerfile.
+# Render terminates TLS, so the Vercel page can open wss:// to the service URL.
+#
+# After the first deploy, set JARVIS_PUBLIC_URL to the service URL
+# (https://<service-name>.onrender.com) in the Render dashboard.
+#
+# Note: the free plan sleeps after ~15 min idle; the first request after that
+# takes 30-60 s to wake it. A paid plan stays awake.
+services:
+  - type: web
+    name: jarvis-bridge
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: JARVIS_ENGINE
+        value: gemini
+      - key: JARVIS_GEMINI_MODEL
+        value: gemini-3.5-flash
+      - key: JARVIS_EFFORT
+        value: low
+      - key: JARVIS_ALLOWED_ORIGINS
+        value: https://virtualanna.vercel.app
+      - key: JARVIS_AUTH_TOKEN
+        generateValue: true
+      - key: JARVIS_PUBLIC_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: JARVIS_VOICE_ID
+        sync: false

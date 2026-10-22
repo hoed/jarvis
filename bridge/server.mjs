@@ -30,7 +30,7 @@ import { openRemote, proxyError, vetTarget, PROXY_UA } from './net.mjs'
 import { probeUrl, renderPage } from './page.mjs'
 import { weatherServer, searchServer } from './tools.mjs'
 
-const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? process.env.PORT ?? 8787)
 
 /**
  * A crash here takes the whole assistant down mid-sentence, and most of what
